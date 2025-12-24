@@ -1,0 +1,420 @@
+Chat Server
+import socket
+import threading
+
+class ChatServer:
+    def __init__(self, host='localhost', port=12346):
+        self.host = host
+        self.port = port
+        self.clients = []
+        self.nicknames = []
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    def broadcast(self, message, sender_client=None):
+        """Broadcast message to all connected clients except sender"""
+        for client in self.clients:
+            if client != sender_client:
+                try:
+                    client.send(message)
+                except:
+                    self.remove_client(client)
+    
+    def remove_client(self, client):
+        """Remove client from server"""
+        if client in self.clients:
+            index = self.clients.index(client)
+            self.clients.remove(client)
+            nickname = self.nicknames[index]
+            self.nicknames.remove(nickname)
+            self.broadcast(f"{nickname} left the chat!".encode('utf-8'))
+            client.close()
+    
+    def handle_client(self, client):
+        """Handle messages from clients"""
+        while True:
+            try:
+                message = client.recv(1024)
+                if message:
+                    self.broadcast(message, client)
+                else:
+                    self.remove_client(client)
+                    break
+            except:
+                self.remove_client(client)
+                break
+    
+    def start_server(self):
+        """Start the chat server"""
+        try:
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen()
+            print(f"Chat Server listening on {self.host}:{self.port}")
+            
+            while True:
+                client, address = self.server_socket.accept()
+                print(f"Connected with {str(address)}")
+                
+                # Request nickname
+                client.send("NICK".encode('utf-8'))
+                nickname = client.recv(1024).decode('utf-8')
+                
+                self.nicknames.append(nickname)
+                self.clients.append(client)
+                
+                print(f"Nickname of client is {nickname}")
+                self.broadcast(f"{nickname} joined the chat!".encode('utf-8'))
+                client.send("Connected to server!".encode('utf-8'))
+                
+                # Start handling thread for client
+                thread = threading.Thread(target=self.handle_client, args=(client,))
+                thread.daemon = True
+                thread.start()
+                
+        except KeyboardInterrupt:
+            print("\nServer shutting down...")
+        finally:
+            self.server_socket.close()
+
+if __name__ == "__main__":
+    server = ChatServer()
+    server.start_server()
+
+Chat Clien
+import socket
+import threading
+
+class ChatClient:
+    def __init__(self, host='localhost', port=12346):
+        self.host = host
+        self.port = port
+        self.nickname = input("Choose a nickname: ")
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    def receive_messages(self):
+        """Receive messages from server"""
+        while True:
+            try:
+                message = self.client_socket.recv(1024).decode('utf-8')
+                
+                if message == "NICK":
+                    self.client_socket.send(self.nickname.encode('utf-8'))
+                else:
+                    print(message)
+                    
+            except:
+                print("An error occurred!")
+                self.client_socket.close()
+                break
+    
+    def send_messages(self):
+        """Send messages to server"""
+        while True:
+            message = f"{self.nickname}: {input('')}"
+            self.client_socket.send(message.encode('utf-8'))
+    
+    def start_client(self):
+        """Start the chat client"""
+        try:
+            self.client_socket.connect((self.host, self.port))
+            
+            # Start receiving thread
+            receive_thread = threading.Thread(target=self.receive_messages)
+            receive_thread.daemon = True
+            receive_thread.start()
+            
+            # Start sending messages
+            self.send_messages()
+            
+        except ConnectionRefusedError:
+            print("Could not connect to server. Make sure server is running.")
+        except Exception as e:
+            print(f"Error: {e}")
+        finally:
+            self.client_socket.close()
+
+if __name__ == "__main__":
+    client = ChatClient()
+    client.start_client()
+
+FTP Server
+import socket
+import os
+import threading
+
+class FileTransferServer:
+    def __init__(self, host='localhost', port=12347, storage_dir='server_files'):
+        self.host = host
+        self.port = port
+        self.storage_dir = storage_dir
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
+        # Create storage directory if it doesn't exist
+        if not os.path.exists(self.storage_dir):
+            os.makedirs(self.storage_dir)
+    
+    def handle_client(self, client_socket, client_address):
+        """Handle file transfer requests"""
+        print(f"Connection established with {client_address}")
+        
+        try:
+            while True:
+                # Receive command from client
+                command = client_socket.recv(1024).decode('utf-8')
+                if not command:
+                    break
+                
+                parts = command.split(' ', 2)
+                action = parts[0].upper()
+                
+                if action == "UPLOAD":
+                    self.handle_upload(client_socket, parts[1], int(parts[2]))
+                elif action == "DOWNLOAD":
+                    self.handle_download(client_socket, parts[1])
+                elif action == "LIST":
+                    self.handle_list(client_socket)
+                elif action == "QUIT":
+                    break
+                else:
+                    client_socket.send("INVALID_COMMAND".encode('utf-8'))
+                    
+        except Exception as e:
+            print(f"Error handling client {client_address}: {e}")
+        finally:
+            client_socket.close()
+            print(f"Connection with {client_address} closed")
+    
+    def handle_upload(self, client_socket, filename, filesize):
+        """Handle file upload from client"""
+        filepath = os.path.join(self.storage_dir, filename)
+        
+        try:
+            client_socket.send("READY".encode('utf-8'))
+            
+            with open(filepath, 'wb') as file:
+                bytes_received = 0
+                while bytes_received < filesize:
+                    data = client_socket.recv(min(1024, filesize - bytes_received))
+                    if not data:
+                        break
+                    file.write(data)
+                    bytes_received += len(data)
+            
+            if bytes_received == filesize:
+                client_socket.send("UPLOAD_SUCCESS".encode('utf-8'))
+                print(f"File {filename} uploaded successfully")
+            else:
+                client_socket.send("UPLOAD_FAILED".encode('utf-8'))
+                
+        except Exception as e:
+            client_socket.send("UPLOAD_ERROR".encode('utf-8'))
+            print(f"Upload error: {e}")
+    
+    def handle_download(self, client_socket, filename):
+        """Handle file download request"""
+        filepath = os.path.join(self.storage_dir, filename)
+        
+        if not os.path.exists(filepath):
+            client_socket.send("FILE_NOT_FOUND".encode('utf-8'))
+            return
+        
+        try:
+            filesize = os.path.getsize(filepath)
+            client_socket.send(f"FILE_SIZE {filesize}".encode('utf-8'))
+            
+            # Wait for client confirmation
+            response = client_socket.recv(1024).decode('utf-8')
+            if response == "READY":
+                with open(filepath, 'rb') as file:
+                    while True:
+                        data = file.read(1024)
+                        if not data:
+                            break
+                        client_socket.send(data)
+                
+                print(f"File {filename} sent successfully")
+                
+        except Exception as e:
+            client_socket.send("DOWNLOAD_ERROR".encode('utf-8'))
+            print(f"Download error: {e}")
+    
+    def handle_list(self, client_socket):
+        """Send list of available files"""
+        try:
+            files = os.listdir(self.storage_dir)
+            if files:
+                file_list = '\n'.join(files)
+                client_socket.send(f"FILES\n{file_list}".encode('utf-8'))
+            else:
+                client_socket.send("NO_FILES".encode('utf-8'))
+        except Exception as e:
+            client_socket.send("LIST_ERROR".encode('utf-8'))
+    
+    def start_server(self):
+        """Start the file transfer server"""
+        try:
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(5)
+            print(f"File Transfer Server listening on {self.host}:{self.port}")
+            print(f"Storage directory: {self.storage_dir}")
+            
+            while True:
+                client_socket, client_address = self.server_socket.accept()
+                
+                client_thread = threading.Thread(
+                    target=self.handle_client,
+                    args=(client_socket, client_address)
+                )
+                client_thread.daemon = True
+                client_thread.start()
+                
+        except KeyboardInterrupt:
+            print("\nServer shutting down...")
+        finally:
+            self.server_socket.close()
+
+if __name__ == "__main__":
+    server = FileTransferServer()
+    server.start_server()
+FTP Client
+import socket
+import os
+
+class FileTransferClient:
+    def __init__(self, host='localhost', port=12347):
+        self.host = host
+        self.port = port
+        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    def upload_file(self, filepath):
+        """Upload file to server"""
+        if not os.path.exists(filepath):
+            print("File not found!")
+            return
+        
+        filename = os.path.basename(filepath)
+        filesize = os.path.getsize(filepath)
+        
+        # Send upload command
+        command = f"UPLOAD {filename} {filesize}"
+        self.client_socket.send(command.encode('utf-8'))
+        
+        # Wait for server response
+        response = self.client_socket.recv(1024).decode('utf-8')
+        if response == "READY":
+            try:
+                with open(filepath, 'rb') as file:
+                    bytes_sent = 0
+                    while bytes_sent < filesize:
+                        data = file.read(1024)
+                        if not data:
+                            break
+                        self.client_socket.send(data)
+                        bytes_sent += len(data)
+                
+                # Check upload result
+                result = self.client_socket.recv(1024).decode('utf-8')
+                if result == "UPLOAD_SUCCESS":
+                    print(f"File {filename} uploaded successfully!")
+                else:
+                    print("Upload failed!")
+                    
+            except Exception as e:
+                print(f"Upload error: {e}")
+        else:
+            print("Server not ready for upload")
+    
+    def download_file(self, filename):
+        """Download file from server"""
+        # Send download command
+        command = f"DOWNLOAD {filename}"
+        self.client_socket.send(command.encode('utf-8'))
+        
+        # Receive response
+        response = self.client_socket.recv(1024).decode('utf-8')
+        
+        if response.startswith("FILE_SIZE"):
+            filesize = int(response.split()[1])
+            self.client_socket.send("READY".encode('utf-8'))
+            
+            try:
+                with open(f"downloaded_{filename}", 'wb') as file:
+                    bytes_received = 0
+                    while bytes_received < filesize:
+                        data = self.client_socket.recv(min(1024, filesize - bytes_received))
+                        if not data:
+                            break
+                        file.write(data)
+                        bytes_received += len(data)
+                
+                if bytes_received == filesize:
+                    print(f"File {filename} downloaded successfully as downloaded_{filename}!")
+                else:
+                    print("Download incomplete!")
+                    
+            except Exception as e:
+                print(f"Download error: {e}")
+                
+        elif response == "FILE_NOT_FOUND":
+            print("File not found on server!")
+        else:
+            print("Download failed!")
+    
+    def list_files(self):
+        """List files available on server"""
+        self.client_socket.send("LIST".encode('utf-8'))
+        response = self.client_socket.recv(4096).decode('utf-8')
+        
+        if response.startswith("FILES"):
+            files = response.split('\n')[1:]
+            print("Available files on server:")
+            for file in files:
+                print(f"  - {file}")
+        elif response == "NO_FILES":
+            print("No files available on server")
+        else:
+            print("Could not retrieve file list")
+    
+    def start_client(self):
+        """Start the file transfer client"""
+        try:
+            self.client_socket.connect((self.host, self.port))
+            print(f"Connected to File Transfer Server at {self.host}:{self.port}")
+            print("\nCommands:")
+            print("1. upload <filepath> - Upload file to server")
+            print("2. download <filename> - Download file from server")
+            print("3. list - List files on server")
+            print("4. quit - Exit")
+            
+            while True:
+                command = input("\nEnter command: ").strip().split()
+                
+                if not command:
+                    continue
+                
+                action = command[0].lower()
+                
+                if action == "upload" and len(command) == 2:
+                    self.upload_file(command[1])
+                elif action == "download" and len(command) == 2:
+                    self.download_file(command[1])
+                elif action == "list":
+                    self.list_files()
+                elif action == "quit":
+                    self.client_socket.send("QUIT".encode('utf-8'))
+                    break
+                else:
+                    print("Invalid command format!")
+                    
+        except ConnectionRefusedError:
+            print("Could not connect to server. Make sure server is running.")
+        except Exception as e:
+            print(f"Error: {e}")
+        finally:
+            self.client_socket.close()
+            print("Disconnected from server")
+
+if __name__ == "__main__":
+    client = FileTransferClient()
+    client.start_client()
